@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <title>3D Head Tracking</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+        #info {
+            position: absolute;
+            top: 10px; left: 10px;
+            color: white; font-family: monospace;
+            font-size: 14px;
+            z-index: 10;
+            background: rgba(0,0,0,0.5);
+            padding: 5px;
+        }
+
+        /* 🔥 新增：清除按钮 */
+        #clearBtn {
+            position: absolute;
+            top: 45px;
+            left: 10px;
+            z-index: 10;
+            background: #ff4444;
+            border: none;
+            padding: 6px 12px;
+            color: white;
+            font-family: monospace;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        #clearBtn:hover {
+            background: #cc0000;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+<div id="info">Waiting for data...</div>
+<button id="clearBtn">Clear</button>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // ===== 场景基础设置 =====
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x111111);
+
+    const camera = new THREE.PerspectiveCamera(
+        60,
+        window.innerWidth / window.innerHeight,
+        0.01,
+        500
+    );
+    camera.position.set(2, 2, 5);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    scene.add(new THREE.AxesHelper(2.0));
+    scene.add(new THREE.GridHelper(10, 10, 0x444444, 0x222222));
+
+    let line = null;
+
+    // ===== 数据预处理函数 =====
+    function processData(rawPoints) {
+        if (!rawPoints || rawPoints.length === 0) return [];
+
+        const scale = 3.0; // 轨迹放大比例
+        let origin = null;
+        const processed = [];
+
+        for (let p of rawPoints) {
+            const pos = p.position || p;
+            if (!Array.isArray(pos) || pos.length < 3) continue;
+
+            const v = new THREE.Vector3(pos[0], pos[1], pos[2]);
+
+            if (!origin) origin = v.clone();
+
+            // 相对 + 放大
+            const rel = v.clone().sub(origin).multiplyScalar(scale);
+            processed.push(rel);
+        }
+
+        return processed;
+    }
+
+    // ===== 更新轨迹 =====
+    function updateTrajectory(points) {
+        if (line) {
+            scene.remove(line);
+            line.geometry.dispose();
+            line.material.dispose();
+            line = null;
+        }
+
+        if (!points || points.length === 0) {
+            document.getElementById("info").innerText = "Points: 0";
+            return;
+        }
+
+        const geometry = new THREE.BufferGeometry();
+        geometry.setFromPoints(points);
+
+        line = new THREE.Line(
+            geometry,
+            new THREE.LineBasicMaterial({ color: 0x00ffaa })
+        );
+
+        scene.add(line);
+        document.getElementById("info").innerText = `Points: ${points.length}`;
+    }
+
+    // ===== 清空按钮功能 =====
+    document.getElementById("clearBtn").onclick = async () => {
+        try {
+            const res = await fetch("/clear", { method: "POST" });
+            if (!res.ok) throw new Error("Clear API failed");
+
+            updateTrajectory([]); // 清除前端轨迹
+            document.getElementById("info").innerText = "Cleared";
+
+        } catch (err) {
+            console.error(err);
+            document.getElementById("info").innerText = "Clear failed";
+        }
+    };
+
+    // ===== 轮询服务器 =====
+    async function fetchTrajectory() {
+        try {
+            const res = await fetch("/trajectory");
+            const raw = await res.json();
+
+            const cleaned = processData(raw);
+            updateTrajectory(cleaned);
+
+        } catch (err) {
+            console.error(err);
+            document.getElementById("info").innerText = "Error connecting to server";
+        }
+    }
+
+    setInterval(fetchTrajectory, 200);
+
+    // ===== 渲染循环 =====
+    function animate() {
+        requestAnimationFrame(animate);
+        controls.update();
+        renderer.render(scene, camera);
+    }
+    animate();
+
+    // ===== 自适应窗口 =====
+    window.addEventListener("resize", () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+
+</body>
+</html>

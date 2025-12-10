@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Real Trajectory Replay</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; }
+
+        /* UI 样式 */
+        #ui {
+            position: absolute; bottom: 30px; left: 50%;
+            transform: translateX(-50%);
+            z-index: 10;
+            background: rgba(20, 20, 20, 0.9);
+            padding: 10px 20px;
+            border-radius: 50px;
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            border: 1px solid #333;
+            color: white;
+            font-family: monospace;
+        }
+        button {
+            background: #00ffaa; border: none; padding: 8px 16px;
+            border-radius: 20px; cursor: pointer; font-weight: bold;
+        }
+        button:hover { background: #00cc88; }
+        input[type=range] { width: 300px; cursor: pointer; }
+        #status {
+            position: absolute; top: 10px; left: 10px;
+            color: #888; font-family: monospace; pointer-events: none;
+        }
+    </style>
+
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.152.2/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.152.2/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+<div id="status">Waiting for data from /trajectory ...</div>
+
+<div id="ui">
+    <button id="playBtn">PLAY</button>
+    <input id="slider" type="range" min="0" max="100" value="0" step="0.1">
+    <span id="timeLabel">0%</span>
+</div>
+
+<script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // 1. 初始化场景
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x050505); // 深灰色背景
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.01, 10);
+    camera.position.set(0, 5, 10);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+
+    // 辅助工具
+    scene.add(new THREE.GridHelper(20, 20, 0x333333, 0x111111));
+    scene.add(new THREE.AxesHelper(1));
+
+    // 2. 创建对象：轨迹线 + 当前位置指示球
+    // 轨迹线
+    const lineGeometry = new THREE.BufferGeometry();
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0x00ffaa }); // 绿色轨迹
+    const line = new THREE.Line(lineGeometry, lineMaterial);
+    scene.add(line);
+
+    // 头部指示器（红色小球）
+    const headMesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.1, 16, 16),
+        new THREE.MeshBasicMaterial({ color: 0xff3333 })
+    );
+    scene.add(headMesh);
+    headMesh.visible = false; // 一开始隐藏，有数据再显示
+
+    // 3. 核心数据变量
+    let allPoints = []; // 存储清洗后的 {x,y,z} 数据
+    let isPlaying = false;
+    let playSpeed = 0.2; // 播放速度增量
+
+    // 4. 获取并清洗数据
+    async function loadData() {
+        try {
+            const statusDiv = document.getElementById('status');
+            statusDiv.innerText = "Fetching /trajectory...";
+
+            // 请求后端
+            const res = await fetch("/trajectory");
+            if (!res.ok) throw new Error(`HTTP Error ${res.status}`);
+
+            const rawData = await res.json();
+            statusDiv.innerText = `Loaded ${rawData.length} points. Ready.`;
+
+            // 数据清洗 + 转为相对坐标 + 放大显示
+            allPoints = [];
+
+            let origin = null;
+            const scale = 3.0;   // 放大系数（你可调成 2~5）
+
+            for (let item of rawData) {
+                const p = item.position || item;
+
+                let v;
+                if (Array.isArray(p) && p.length >= 3) {
+                    v = new THREE.Vector3(p[0], p[1], p[2]);
+                } else if (p && p.x !== undefined) {
+                    v = new THREE.Vector3(p.x, p.y, p.z);
+                } else continue;
+
+                if (!origin) origin = v.clone();
+
+                // 转为相对坐标
+                const relative = v.clone().sub(origin);
+
+                // 放大以便显示
+                relative.multiplyScalar(scale);
+
+                allPoints.push(relative);
+            }
+
+            if (allPoints.length > 0) {
+                headMesh.visible = true;
+                fitCameraToData(); // 自动调整相机看哪里
+                updateDisplay(0);  // 显示初始状态
+            } else {
+                statusDiv.innerText = "Data loaded but empty array.";
+            }
+
+        } catch (err) {
+            console.error(err);
+            document.getElementById('status').innerText = "Error: " + err.message;
+        }
+    }
+
+    // 5. 更新画面逻辑
+    // progress: 0 到 100 之间的数字
+    function updateDisplay(progress) {
+        if (allPoints.length === 0) return;
+
+        // 计算当前帧的索引
+        // Math.floor 可能会漏掉最后一个点，所以加个 min 限制
+        const index = Math.min(
+            Math.floor((progress / 100) * allPoints.length),
+            allPoints.length - 1
+        );
+
+        // 1. 更新小球位置
+        if (index >= 0) {
+            headMesh.position.copy(allPoints[index]);
+        }
+
+        // 2. 更新轨迹线 (只画 0 到 index 这一段)
+        // 为了性能，我们每次重建 geometry 的点列表（点数<10万时这种写法很简单且足够快）
+        const currentPath = allPoints.slice(0, index + 1);
+        lineGeometry.setFromPoints(currentPath);
+    }
+
+    // 6. 自动对焦逻辑（根据数据范围调整相机）
+    function fitCameraToData() {
+        const box = new THREE.Box3().setFromPoints(allPoints);
+        const center = new THREE.Vector3();
+        box.getCenter(center);
+
+        controls.target.copy(center); // 让旋转中心对准轨迹中心
+        camera.position.set(center.x + 2, center.y + 2, center.z + 5);
+        camera.lookAt(center);
+    }
+
+    // 7. 播放控制逻辑
+    const slider = document.getElementById('slider');
+    const playBtn = document.getElementById('playBtn');
+    const timeLabel = document.getElementById('timeLabel');
+
+    slider.addEventListener('input', (e) => {
+        const val = parseFloat(e.target.value);
+        timeLabel.innerText = val.toFixed(1) + "%";
+        updateDisplay(val);
+        if (isPlaying) stopPlay(); // 拖动时暂停
+    });
+
+    function startPlay() {
+        isPlaying = true;
+        playBtn.innerText = "PAUSE";
+        playBtn.style.background = "#ff4444";
+    }
+
+    function stopPlay() {
+        isPlaying = false;
+        playBtn.innerText = "PLAY";
+        playBtn.style.background = "#00ffaa";
+    }
+
+    playBtn.addEventListener('click', () => {
+        if (isPlaying) stopPlay();
+        else startPlay();
+    });
+
+    // 8. 动画循环
+    function animate() {
+        requestAnimationFrame(animate);
+
+        if (isPlaying && allPoints.length > 0) {
+            let val = parseFloat(slider.value);
+            val += playSpeed; // 每一帧增加一点进度
+
+            if (val >= 100) {
+                val = 100;
+                stopPlay(); // 播完了
+            }
+
+            slider.value = val;
+            timeLabel.innerText = val.toFixed(1) + "%";
+            updateDisplay(val);
+        }
+
+        controls.update();
+        renderer.render(scene, camera);
+    }
+
+    // 启动
+    loadData();
+    animate();
+
+    // 窗口调整
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>

@@ -1,0 +1,111 @@
+openapi: 3.0.3
+info:
+  title: Vision Pro Head Pose API
+  version: 1.1.0
+  description: >
+    API for receiving, storing (SQLite + memory), querying, and clearing
+    head-pose data streamed from Vision Pro.
+
+servers:
+  - url: http://localhost:30000
+    description: Local development server
+
+paths:
+
+  /pose:
+    post:
+      summary: Upload a head pose sample
+      description: >
+        Vision Pro sends pose samples at ~10–60Hz.  
+        The server stores each sample both in memory and in the SQLite database.
+      tags:
+        - Pose
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PoseSample"
+            example:
+              timestamp: 1765348847.714858
+              position: [0.0452, 1.6721, 0.0899]
+              quaternion: [-0.0140, -0.3073, -0.0146, 0.9513]
+      responses:
+        "200":
+          description: Successfully saved
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+
+  /trajectory:
+    get:
+      summary: Get full trajectory
+      description: >
+        Returns all pose samples stored in the SQLite database  
+        (and mirrors the same format as PoseSample).
+      tags:
+        - Trajectory
+      responses:
+        "200":
+          description: List of pose samples
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PoseSample"
+              example:
+                - timestamp: 1765348847.700
+                  position: [0.00, 1.07, -0.01]
+                  quaternion: [0.01, -0.02, 0.00, 0.99]
+                - timestamp: 1765348847.733
+                  position: [0.01, 1.08, -0.02]
+                  quaternion: [0.02, -0.01, -0.01, 0.99]
+
+  /clear:
+    post:
+      summary: Clear all stored pose data
+      description: >
+        Clears both in-memory buffer and the SQLite database table `poses`.
+      tags:
+        - Maintenance
+      responses:
+        "200":
+          description: Cleared successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: cleared
+
+components:
+  schemas:
+    PoseSample:
+      type: object
+      required:
+        - timestamp
+        - position
+        - quaternion
+      properties:
+        timestamp:
+          type: number
+          format: float
+          description: Timestamp in seconds
+        position:
+          type: array
+          description: [x, y, z]
+          items:
+            type: number
+        quaternion:
+          type: array
+          description: [x, y, z, w]
+          items:
+            type: number

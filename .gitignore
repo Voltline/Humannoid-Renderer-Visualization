@@ -209,3 +209,4 @@ __marimo__/
 .idea/
 .idea/*
 .DS_Store
+*.db
